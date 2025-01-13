@@ -1,0 +1,11 @@
+[package]
+name = "terrain"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+nalgebra = "0.33.2"
+ndarray = "0.16.1"
+ndarray_images = "0.0.0"
+noisette = "0.0.0"
+rand = "0.8.5"
