@@ -20,8 +20,9 @@ pub fn square(mut samples: Array2<f32>) -> Array2<f32> {
 }
 
 pub fn band(mut samples: Array2<f32>, levels: usize) -> Array2<f32> {
-    let delta = 1.0 / levels as f32;
-    samples.mapv_inplace(|v| (v / delta).floor() * delta);
+    let l = levels as f32;
+    let delta = 1.0 / l;
+    samples.mapv_inplace(|v| ((v.min(1.0 - f32::EPSILON)) * l).floor() * delta);
     samples
 }
 
