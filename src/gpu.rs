@@ -226,6 +226,64 @@ const SMOOTH_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
     },
 ];
 
+const QUANTIZE_SHADER_WGSL: &str = include_str!("shaders/quantize.wgsl");
+const QUANTIZE_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    wgpu::BindGroupLayoutEntry {
+        binding: 2,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
+const CONTOUR_SHADER_WGSL: &str = include_str!("shaders/contour.wgsl");
+const CONTOUR_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -249,6 +307,12 @@ pub struct Gpu {
     magnitude_bind_group_layout: wgpu::BindGroupLayout,
     smooth_pipeline: wgpu::ComputePipeline,
     smooth_bind_group_layout: wgpu::BindGroupLayout,
+    contour_pipeline: wgpu::ComputePipeline,
+    contour_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Quantize
+    quantize_pipeline: wgpu::ComputePipeline,
+    quantize_bind_group_layout: wgpu::BindGroupLayout,
 
     // Colour map
     colour_pipeline: wgpu::ComputePipeline,
@@ -351,12 +415,32 @@ impl Gpu {
             cols,
         );
 
+        // Contour pipeline
+        let (contour_pipeline, contour_bind_group_layout) = Self::create_pipeline(
+            &device,
+            CONTOUR_SHADER_WGSL,
+            CONTOUR_SHADER_LAYOUT,
+            "Contour Pipeline",
+            rows,
+            cols,
+        );
+
         // Colour pipeline
         let (colour_pipeline, colour_bind_group_layout) = Self::create_pipeline(
             &device,
             COLOUR_SHADER_WGSL,
             COLORMAP_SHADER_LAYOUT,
             "Colour Pipeline",
+            rows,
+            cols,
+        );
+
+        // Quantise pipeline
+        let (quantize_pipeline, quantize_bind_group_layout) = Self::create_pipeline(
+            &device,
+            QUANTIZE_SHADER_WGSL,
+            QUANTIZE_SHADER_LAYOUT,
+            "Quantize Pipeline",
             rows,
             cols,
         );
@@ -380,8 +464,12 @@ impl Gpu {
             magnitude_bind_group_layout,
             smooth_pipeline,
             smooth_bind_group_layout,
+            contour_pipeline,
+            contour_bind_group_layout,
             colour_pipeline,
             colour_bind_group_layout,
+            quantize_pipeline,
+            quantize_bind_group_layout,
             workgroup_size: (8, 8, 1),
             rows,
             cols,
@@ -438,8 +526,8 @@ impl Gpu {
         pipeline: &wgpu::ComputePipeline,
         layout: &wgpu::BindGroupLayout,
     ) -> Array2<f32> {
-        let (rows, cols) = (self.rows, self.cols);
-        let size_bytes = (rows * cols * std::mem::size_of::<f32>() as u32) as wgpu::BufferAddress;
+        let size_bytes =
+            (self.rows * self.cols * std::mem::size_of::<f32>() as u32) as wgpu::BufferAddress;
 
         // 1) Create staging + GPU storage
         let staging_buf = self
@@ -507,8 +595,8 @@ impl Gpu {
                 cpass.set_pipeline(pipeline);
                 cpass.set_bind_group(0, &bind_group, &[]);
                 let (wx, wy, wz) = self.workgroup_size;
-                let nx = (cols as f32 / wx as f32).ceil() as u32;
-                let ny = (rows as f32 / wy as f32).ceil() as u32;
+                let nx = (self.cols as f32 / wx as f32).ceil() as u32;
+                let ny = (self.rows as f32 / wy as f32).ceil() as u32;
                 cpass.dispatch_workgroups(nx, ny, wz);
             }
             self.queue.submit(Some(encoder.finish()));
@@ -545,7 +633,7 @@ impl Gpu {
         drop(data);
         readback.unmap();
 
-        Array2::from_shape_vec((rows as usize, cols as usize), result).unwrap()
+        Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
 
     /// For ops reading one buffer and writing to another (gradient, magnitude, simulation).
@@ -639,8 +727,10 @@ impl Gpu {
                 cpass.set_pipeline(pipeline);
                 cpass.set_bind_group(0, &bind_group, &[]);
 
-                // In your real code, compute (nx, ny, 1) from rows, cols, etc.
-                cpass.dispatch_workgroups(16, 16, 1);
+                let (wx, wy, wz) = self.workgroup_size;
+                let nx = (self.cols as f32 / wx as f32).ceil() as u32;
+                let ny = (self.rows as f32 / wy as f32).ceil() as u32;
+                cpass.dispatch_workgroups(nx, ny, wz);
             }
             self.queue.submit(Some(enc.finish()));
         }
@@ -674,6 +764,140 @@ impl Gpu {
         let result_floats: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
         drop(data);
         readback.unmap();
+        result_floats
+    }
+
+    async fn run_two_buffer_op_with_uniform(
+        &self,
+        input_bytes: &[f32],
+        output_bytes: &[f32],
+        uniform_buffer: &wgpu::Buffer, // New argument
+        pipeline: &wgpu::ComputePipeline,
+        layout: &wgpu::BindGroupLayout,
+        bytes_per_input_item: usize,
+        bytes_per_output_item: usize,
+    ) -> Vec<f32> {
+        let size_in = (input_bytes.len() * bytes_per_input_item) as wgpu::BufferAddress;
+        let size_out = (output_bytes.len() * bytes_per_output_item) as wgpu::BufferAddress;
+
+        // 1) Staging + GPU Buffers
+        let staging_in = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Staging In"),
+                contents: bytemuck::cast_slice(input_bytes),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+
+        let staging_out = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Staging Out"),
+                contents: bytemuck::cast_slice(output_bytes),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+
+        let gpu_in = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU In"),
+            size: size_in,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let gpu_out = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("GPU Out"),
+            size: size_out,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // 2) Copy CPU → GPU
+        {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Init Two-Buffers"),
+                });
+            enc.copy_buffer_to_buffer(&staging_in, 0, &gpu_in, 0, size_in);
+            enc.copy_buffer_to_buffer(&staging_out, 0, &gpu_out, 0, size_out);
+            self.queue.submit(Some(enc.finish()));
+        }
+
+        // 3) Bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(gpu_in.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(
+                        uniform_buffer.as_entire_buffer_binding(),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(gpu_out.as_entire_buffer_binding()),
+                },
+            ],
+            label: Some("Two-Buffers BindGroup"),
+        });
+
+        // 4) Dispatch
+        {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Compute Two-Buffers"),
+                });
+            {
+                let mut cpass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Two-Buffers Pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+
+                let (wx, wy, wz) = self.workgroup_size;
+                let nx = (self.cols as f32 / wx as f32).ceil() as u32;
+                let ny = (self.rows as f32 / wy as f32).ceil() as u32;
+                cpass.dispatch_workgroups(nx, ny, wz);
+            }
+            self.queue.submit(Some(enc.finish()));
+        }
+
+        // 5) Read back GPU → CPU
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Two-Buffers Readback"),
+            size: size_out,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        {
+            let mut enc = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Copy Two-Buffers"),
+                });
+            enc.copy_buffer_to_buffer(&gpu_out, 0, &readback, 0, size_out);
+            self.queue.submit(Some(enc.finish()));
+        }
+
+        {
+            let slice = readback.slice(..);
+            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+            slice.map_async(wgpu::MapMode::Read, move |v| tx.send(v).unwrap());
+            self.device.poll(wgpu::Maintain::Wait);
+            rx.receive().await.unwrap().unwrap();
+        }
+        let data = readback.slice(..).get_mapped_range();
+        let result_floats: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        drop(data);
+        readback.unmap();
+
         result_floats
     }
 
@@ -763,35 +987,6 @@ impl Gpu {
         .await
     }
 
-    pub async fn smooth(&self, input: &Array2<f32>) -> Array2<f32> {
-        let (rows, cols) = (self.rows, self.cols);
-        let in_data = input.as_slice().unwrap();
-
-        // Output starts empty/zero
-        let mut smoothed = Array2::<f32>::zeros((rows as usize, cols as usize));
-        let out_data = smoothed.as_slice().unwrap();
-
-        // Each pixel is just one float => 4 bytes
-        let result_floats = self
-            .run_two_buffer_op(
-                in_data,
-                out_data,
-                &self.smooth_pipeline,
-                &self.smooth_bind_group_layout,
-                4, // input item size in bytes
-                4, // output item size in bytes
-            )
-            .await;
-
-        // Copy them back into 'smoothed'
-        smoothed
-            .as_slice_mut()
-            .unwrap()
-            .copy_from_slice(&result_floats);
-
-        smoothed
-    }
-
     pub async fn simulate(&self, heightmap: &Array2<f32>) -> Array2<f32> {
         let (rows, cols) = (self.rows, self.cols);
         let mut distances = Array2::<f32>::zeros((rows as usize, cols as usize));
@@ -875,9 +1070,65 @@ impl Gpu {
         magnitudes
     }
 
-    pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 4]]) -> Array3<f32> {
+    pub async fn smooth(&self, input: &Array2<f32>) -> Array2<f32> {
         let (rows, cols) = (self.rows, self.cols);
+        let in_data = input.as_slice().unwrap();
 
+        // Output starts empty/zero
+        let mut smoothed = Array2::<f32>::zeros((rows as usize, cols as usize));
+        let out_data = smoothed.as_slice().unwrap();
+
+        // Each pixel is just one float => 4 bytes
+        let result_floats = self
+            .run_two_buffer_op(
+                in_data,
+                out_data,
+                &self.smooth_pipeline,
+                &self.smooth_bind_group_layout,
+                4, // input item size in bytes
+                4, // output item size in bytes
+            )
+            .await;
+
+        // Copy them back into 'smoothed'
+        smoothed
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result_floats);
+
+        smoothed
+    }
+
+    pub async fn contour(&self, input: &Array2<f32>) -> Array2<f32> {
+        let (rows, cols) = (self.rows, self.cols);
+        let in_data = input.as_slice().unwrap();
+
+        // Output starts empty/zero
+        let mut contour_output = Array2::<f32>::zeros((rows as usize, cols as usize));
+        let out_data = contour_output.as_slice().unwrap();
+
+        // Run the two-buffer operation
+        let result_floats = self
+            .run_two_buffer_op(
+                in_data,
+                out_data,
+                &self.contour_pipeline,
+                &self.contour_bind_group_layout,
+                4, // input item size in bytes
+                4, // output item size in bytes
+            )
+            .await;
+
+        // Copy results into the Array2
+        contour_output
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result_floats);
+
+        contour_output
+    }
+
+    pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 4]]) -> Array3<f32> {
         // Flatten the heightmap
         let height_slice = heightmap.as_slice().unwrap();
 
@@ -889,7 +1140,7 @@ impl Gpu {
         }
 
         // We'll output shape [rows, cols, 4] => 4 floats per pixel => total 4 * rows * cols
-        let out_len = rows as usize * cols as usize * 4;
+        let out_len = self.rows as usize * self.cols as usize * 4;
         let out_data = vec![0.0f32; out_len];
 
         // 1) Create staging buffers
@@ -998,8 +1249,8 @@ impl Gpu {
                 cpass.set_pipeline(&self.colour_pipeline);
                 cpass.set_bind_group(0, &bind_group, &[]);
                 let (wx, wy, wz) = self.workgroup_size;
-                let nx = (cols as f32 / wx as f32).ceil() as u32;
-                let ny = (rows as f32 / wy as f32).ceil() as u32;
+                let nx = (self.cols as f32 / wx as f32).ceil() as u32;
+                let ny = (self.rows as f32 / wy as f32).ceil() as u32;
                 cpass.dispatch_workgroups(nx, ny, wz);
             }
             self.queue.submit(Some(encoder.finish()));
@@ -1036,6 +1287,44 @@ impl Gpu {
         drop(data);
         readback_buf.unmap();
 
-        Array3::from_shape_vec((rows as usize, cols as usize, 4), gpu_result).unwrap()
+        Array3::from_shape_vec((self.rows as usize, self.cols as usize, 4), gpu_result).unwrap()
+    }
+
+    pub async fn quantize(&self, input: &Array2<f32>, num_steps: u32) -> Array2<f32> {
+        let in_data = input.as_slice().unwrap();
+
+        // Output starts empty/zero
+        let mut quantised = Array2::<f32>::zeros((self.rows as usize, self.cols as usize));
+        let out_data = quantised.as_slice().unwrap();
+
+        // Create a uniform buffer for num_steps
+        let steps_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Num Steps Buffer"),
+                contents: bytemuck::cast_slice(&[num_steps]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        // Adjust `run_two_buffer_op` to include the uniform buffer
+        let result_floats = self
+            .run_two_buffer_op_with_uniform(
+                in_data,
+                out_data,
+                &steps_buf, // Pass the uniform buffer here
+                &self.quantize_pipeline,
+                &self.quantize_bind_group_layout,
+                4, // input item size in bytes
+                4, // output item size in bytes
+            )
+            .await;
+
+        // Copy results into the Array2
+        quantised
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result_floats);
+
+        quantised
     }
 }

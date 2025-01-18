@@ -4,7 +4,7 @@ use terrain::{noise, utils, Gpu};
 #[tokio::main]
 async fn main() {
     // Map settings
-    let resolution = (128, 128);
+    let resolution = (1024, 1024);
 
     // Initialize the random number generator
     let mut rng = rand::thread_rng();
@@ -23,12 +23,21 @@ async fn main() {
         ],
         &mut rng,
     );
+
     // Save the height map
     height
         .save("output/height.png")
         .expect("Failed to save height map");
 
     let gpu = Gpu::new(resolution.0 as u32, resolution.1 as u32).await;
+
+    height = gpu.quantize(&height, 24).await;
+
+    let mut contour = gpu.contour(&height).await;
+    contour = gpu.normalise(&contour).await;
+    contour
+        .save("output/contour.png")
+        .expect("Failed to save contour map");
 
     // height = gpu.invert(&height).await;
     // height = gpu.add(&height, 1.0).await;
