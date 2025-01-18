@@ -875,7 +875,7 @@ impl Gpu {
         magnitudes
     }
 
-    pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 3]]) -> Array3<f32> {
+    pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 4]]) -> Array3<f32> {
         let (rows, cols) = (self.rows, self.cols);
 
         // Flatten the heightmap
@@ -885,11 +885,11 @@ impl Gpu {
         // Example: if you have N stops, that's N*3 floats
         let mut colour_data = Vec::new();
         for c in colours {
-            colour_data.extend_from_slice(c); // push [r, g, b]
+            colour_data.extend_from_slice(c); // push [r, g, b, a]
         }
 
-        // We'll output shape [rows, cols, 3] => 3 floats per pixel => total 3 * rows * cols
-        let out_len = rows as usize * cols as usize * 3;
+        // We'll output shape [rows, cols, 4] => 4 floats per pixel => total 4 * rows * cols
+        let out_len = rows as usize * cols as usize * 4;
         let out_data = vec![0.0f32; out_len];
 
         // 1) Create staging buffers
@@ -897,7 +897,8 @@ impl Gpu {
             (height_slice.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
         let colourmap_size =
             (colour_data.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
-        let rgb_out_size = (out_data.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let rgba_out_size: u64 =
+            (out_data.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
 
         let staging_heightmap = self
             .device
@@ -934,9 +935,9 @@ impl Gpu {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let rgb_out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+        let rgba_out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("RGB Out (storage)"),
-            size: rgb_out_size,
+            size: rgba_out_size,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::COPY_SRC,
@@ -952,7 +953,7 @@ impl Gpu {
                 });
             encoder.copy_buffer_to_buffer(&staging_heightmap, 0, &heightmap_buf, 0, heightmap_size);
             encoder.copy_buffer_to_buffer(&staging_colourmap, 0, &colourmap_buf, 0, colourmap_size);
-            encoder.copy_buffer_to_buffer(&staging_out, 0, &rgb_out_buf, 0, rgb_out_size);
+            encoder.copy_buffer_to_buffer(&staging_out, 0, &rgba_out_buf, 0, rgba_out_size);
             self.queue.submit(Some(encoder.finish()));
         }
 
@@ -974,7 +975,9 @@ impl Gpu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Buffer(rgb_out_buf.as_entire_buffer_binding()),
+                    resource: wgpu::BindingResource::Buffer(
+                        rgba_out_buf.as_entire_buffer_binding(),
+                    ),
                 },
             ],
             label: Some("Colourmap Bind Group"),
@@ -1005,7 +1008,7 @@ impl Gpu {
         // 6) Read back GPU → CPU
         let readback_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Colourmap Readback"),
-            size: rgb_out_size,
+            size: rgba_out_size,
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -1015,7 +1018,7 @@ impl Gpu {
                 .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                     label: Some("Colourmap Copy Encoder"),
                 });
-            encoder.copy_buffer_to_buffer(&rgb_out_buf, 0, &readback_buf, 0, rgb_out_size);
+            encoder.copy_buffer_to_buffer(&rgba_out_buf, 0, &readback_buf, 0, rgba_out_size);
             self.queue.submit(Some(encoder.finish()));
         }
 
@@ -1033,6 +1036,6 @@ impl Gpu {
         drop(data);
         readback_buf.unmap();
 
-        Array3::from_shape_vec((rows as usize, cols as usize, 3), gpu_result).unwrap()
+        Array3::from_shape_vec((rows as usize, cols as usize, 4), gpu_result).unwrap()
     }
 }

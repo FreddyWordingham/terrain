@@ -2,7 +2,7 @@
 var<storage, read> heightmap : array<f32>;
 
 @group(0) @binding(1)
-var<storage, read> colourmap : array<vec3 < f32>>;
+var<storage, read> colourmap : array<vec4 < f32>>;
 
 @group(0) @binding(2)
 var<storage, read_write> rgb_out : array<f32>;
@@ -17,19 +17,17 @@ fn main(@builtin(global_invocation_id) gid : vec3 < u32>)
 {
     let rows = i32(@rows);
     let cols = i32(@cols);
+    let colour_count = f32(get_colour_count());
 
     let x = i32(gid.x);
     let y = i32(gid.y);
+    let i = y * cols + x;
 
     //Guard out-of-bounds
     if (x >= cols || y >= rows)
     {
         return;
     }
-
-    //Flattened pixel index
-    let i = y * cols + x;
-    let colour_count = f32(get_colour_count());
 
     //1) Read the height
     var h = heightmap[u32(i)];
@@ -48,9 +46,10 @@ fn main(@builtin(global_invocation_id) gid : vec3 < u32>)
     //4) Interpolate
     let c = mix(c0, c1, alpha);
 
-    //5) Store result in rgb_out (3 floats per pixel)
-    let out_index = u32(i) * 3u;
+    //Store result in rgb_out
+    let out_index = u32(i) * 4u;
     rgb_out[out_index + 0u] = c.r;
     rgb_out[out_index + 1u] = c.g;
     rgb_out[out_index + 2u] = c.b;
+    rgb_out[out_index + 3u] = c.a;
 }
