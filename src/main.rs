@@ -1,4 +1,3 @@
-use ndarray::Zip;
 use ndarray_images::Image;
 use terrain::{noise, Gpu};
 
@@ -36,24 +35,11 @@ async fn main() {
     height = gpu.normalise(&height).await;
 
     let gradient = gpu.gradient(&height).await;
-    let mut gradient_x = gradient.index_axis(ndarray::Axis(2), 0).to_owned();
-    let mut gradient_y = gradient.index_axis(ndarray::Axis(2), 1).to_owned();
-    let mut gradient_mag = Zip::from(&gradient_x)
-        .and(&gradient_y)
-        .map_collect(|&x, &y| (x.powi(2) + y.powi(2)).sqrt());
+    let mut gradient_mag = gpu.magnitude(&gradient).await;
+
     // Save the gradient magnitude map
     gradient_mag = gpu.normalise(&gradient_mag).await;
     gradient_mag
         .save("output/gradient_mag.png")
         .expect("Failed to save gradient magnitude map");
-
-    // Save the gradient map
-    gradient_x = gpu.normalise(&gradient_x).await;
-    gradient_x
-        .save("output/gradient_x.png")
-        .expect("Failed to save gradient map");
-    gradient_y = gpu.normalise(&gradient_y).await;
-    gradient_y
-        .save("output/gradient_y.png")
-        .expect("Failed to save gradient map");
 }

@@ -1,4 +1,4 @@
-use ndarray::Array2;
+use ndarray::{Array2, Array3};
 use wgpu::util::DeviceExt;
 
 const INVERT_SHADER_WGSL: &str = include_str!("shaders/invert.wgsl");
@@ -139,6 +139,30 @@ const GRADIENT_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
     },
 ];
 
+const MAGNITUDE_SHADER_WGSL: &str = include_str!("shaders/magnitude.wgsl");
+const MAGNITUDE_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -166,6 +190,10 @@ pub struct Gpu {
     // Gradient pipeline
     gradient_pipeline: wgpu::ComputePipeline,
     gradient_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Gradient magnitude pipeline
+    magnitude_pipeline: wgpu::ComputePipeline,
+    magnitude_bind_group_layout: wgpu::BindGroupLayout,
 
     workgroup_size: (u32, u32, u32),
     rows: u32,
@@ -244,6 +272,16 @@ impl Gpu {
             cols,
         );
 
+        // 7) Gradient magnitude pipeline
+        let (magnitude_pipeline, magnitude_bind_group_layout) = Self::create_pipeline(
+            &device,
+            MAGNITUDE_SHADER_WGSL,
+            MAGNITUDE_SHADER_LAYOUT,
+            "Magnitude Pipeline",
+            rows,
+            cols,
+        );
+
         Self {
             device,
             queue,
@@ -259,6 +297,8 @@ impl Gpu {
             simulation_bind_group_layout,
             gradient_pipeline,
             gradient_bind_group_layout,
+            magnitude_pipeline,
+            magnitude_bind_group_layout,
             workgroup_size: (8, 8, 1),
             rows,
             cols,
@@ -530,6 +570,132 @@ impl Gpu {
 
         // Convert the flat vector into shape [rows, cols, 2]
         ndarray::Array3::from_shape_vec((rows as usize, cols as usize, 2), gpu_result).unwrap()
+    }
+
+    pub async fn magnitude(&self, gradient: &Array3<f32>) -> Array2<f32> {
+        let (rows, cols) = (self.rows, self.cols);
+
+        // Flatten gradient shape (rows, cols, 2) => length = 2 * rows * cols
+        let grad_slice = gradient.as_slice().unwrap();
+        let grad_bytes = bytemuck::cast_slice(grad_slice);
+
+        // We'll output (rows, cols) => length = rows * cols
+        let mag_array = Array2::<f32>::zeros((rows as usize, cols as usize));
+        let mag_bytes = bytemuck::cast_slice(mag_array.as_slice().unwrap());
+
+        // 1) Create staging buffers
+        let grad_buf_size = (rows * cols * 2) as wgpu::BufferAddress
+            * std::mem::size_of::<f32>() as wgpu::BufferAddress;
+        let grad_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Gradient (storage)"),
+            size: grad_buf_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let staging_grad = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Staging Gradient"),
+                contents: grad_bytes,
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+
+        // We'll also create a staging buffer for the magnitude output (initially all zero).
+        let mag_buf_size = (rows * cols) as wgpu::BufferAddress
+            * std::mem::size_of::<f32>() as wgpu::BufferAddress;
+        let mag_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Magnitude (storage)"),
+            size: mag_buf_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging_mag = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Staging Magnitude"),
+                contents: mag_bytes,
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+
+        // 2) Copy data to the GPU
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Magnitude Init Encoder"),
+            });
+        encoder.copy_buffer_to_buffer(&staging_grad, 0, &grad_buffer, 0, grad_buf_size);
+        encoder.copy_buffer_to_buffer(&staging_mag, 0, &mag_buffer, 0, mag_buf_size);
+        self.queue.submit(Some(encoder.finish()));
+
+        // 3) Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.magnitude_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(grad_buffer.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(mag_buffer.as_entire_buffer_binding()),
+                },
+            ],
+            label: Some("Magnitude Bind Group"),
+        });
+
+        // 4) Dispatch compute
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Magnitude Compute Encoder"),
+            });
+        {
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Magnitude Pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.magnitude_pipeline);
+            cpass.set_bind_group(0, &bind_group, &[]);
+            let (wx, wy, wz) = self.workgroup_size;
+            let nx = (cols as f32 / wx as f32).ceil() as u32;
+            let ny = (rows as f32 / wy as f32).ceil() as u32;
+            cpass.dispatch_workgroups(nx, ny, wz);
+        }
+        self.queue.submit(Some(encoder.finish()));
+
+        // 5) Copy results back
+        let readback_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Magnitude Readback Buffer"),
+            size: mag_buf_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Magnitude Copy Encoder"),
+            });
+        encoder.copy_buffer_to_buffer(&mag_buffer, 0, &readback_buf, 0, mag_buf_size);
+        self.queue.submit(Some(encoder.finish()));
+
+        {
+            let buffer_slice = readback_buf.slice(..);
+            let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+            self.device.poll(wgpu::Maintain::Wait);
+            receiver.receive().await.unwrap().unwrap();
+        }
+
+        // 6) Rebuild into Array2<f32> of shape (rows, cols)
+        let data = readback_buf.slice(..).get_mapped_range();
+        let gpu_result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        drop(data);
+        readback_buf.unmap();
+
+        // Convert the flat vector into shape [rows, cols]
+        Array2::from_shape_vec((rows as usize, cols as usize), gpu_result).unwrap()
     }
 
     // Generalised helper to run a compute pass
