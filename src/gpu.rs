@@ -3,6 +3,20 @@ use std::collections::HashMap;
 use ndarray::{Array2, Array3};
 use wgpu::util::DeviceExt;
 
+macro_rules! add_pipeline {
+    ($pipelines:expr, $device:expr, $shader:expr, $layout:expr, $label:expr, $rows:expr, $cols:expr, $num_bind_entries:expr) => {{
+        let (pipeline, bind_group_layout) = Self::create_pipeline(&$device, $shader, $layout, &format!("{} Pipeline", $label), $rows, $cols);
+        $pipelines.insert(
+            $label,
+            PipelineInfo {
+                pipeline,
+                bind_group_layout,
+                num_bind_entries: $num_bind_entries,
+            },
+        );
+    }};
+}
+
 const INVERT_LABEL: &str = "invert";
 const INVERT_SHADER_WGSL: &str = include_str!("shaders/invert.wgsl");
 const INVERT_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[wgpu::BindGroupLayoutEntry {
@@ -330,209 +344,21 @@ impl Gpu {
             ..Default::default()
         });
         let adapter = instance.request_adapter(&Default::default()).await.unwrap();
-        let (device, queue) = adapter
-            .request_device(&Default::default(), None)
-            .await
-            .unwrap();
+        let (device, queue) = adapter.request_device(&Default::default(), None).await.unwrap();
 
         // Invert pipeline
         let mut pipelines = HashMap::new();
-        let (invert_pipeline, invert_layout) = Self::create_pipeline(
-            &device,
-            &INVERT_SHADER_WGSL,
-            INVERT_SHADER_LAYOUT,
-            &format!("{} Pipeline", INVERT_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            "invert",
-            PipelineInfo {
-                pipeline: invert_pipeline,
-                bind_group_layout: invert_layout,
-                num_bind_entries: 1, // Just one read-write buffer
-            },
-        );
-
-        // Multiply pipeline
-        let (multiply_pipeline, multiply_layout) = Self::create_pipeline(
-            &device,
-            MULTIPLY_SHADER_WGSL,
-            MULTIPLY_SHADER_LAYOUT,
-            &format!("{} Pipeline", MULTIPLY_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            MULTIPLY_LABEL,
-            PipelineInfo {
-                pipeline: multiply_pipeline,
-                bind_group_layout: multiply_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Add pipeline
-        let (add_pipeline, add_layout) = Self::create_pipeline(
-            &device,
-            ADD_SHADER_WGSL,
-            ADD_SHADER_LAYOUT,
-            &format!("{} Pipeline", ADD_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            ADD_LABEL,
-            PipelineInfo {
-                pipeline: add_pipeline,
-                bind_group_layout: add_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Normalise pipeline
-        let (normalise_pipeline, normalise_layout) = Self::create_pipeline(
-            &device,
-            NORMALISE_SHADER_WGSL,
-            NORMALISE_SHADER_LAYOUT,
-            &format!("{} Pipeline", NORMALISE_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            NORMALISE_LABEL,
-            PipelineInfo {
-                pipeline: normalise_pipeline,
-                bind_group_layout: normalise_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Gradient pipeline
-        let (gradient_pipeline, gradient_layout) = Self::create_pipeline(
-            &device,
-            GRADIENT_SHADER_WGSL,
-            GRADIENT_SHADER_LAYOUT,
-            &format!("{} Pipeline", GRADIENT_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            GRADIENT_LABEL,
-            PipelineInfo {
-                pipeline: gradient_pipeline,
-                bind_group_layout: gradient_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Gradient magnitude pipeline
-        let (magnitude_pipeline, magnitude_layout) = Self::create_pipeline(
-            &device,
-            MAGNITUDE_SHADER_WGSL,
-            MAGNITUDE_SHADER_LAYOUT,
-            &format!("{} Pipeline", MAGNITUDE_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            MAGNITUDE_LABEL,
-            PipelineInfo {
-                pipeline: magnitude_pipeline,
-                bind_group_layout: magnitude_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Flow pipeline
-        let (flow_pipeline, flow_layout) = Self::create_pipeline(
-            &device,
-            FLOW_SHADER_WGSL,
-            FLOW_SHADER_LAYOUT,
-            &format!("{} Pipeline", FLOW_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            FLOW_LABEL,
-            PipelineInfo {
-                pipeline: flow_pipeline,
-                bind_group_layout: flow_layout,
-                num_bind_entries: 3,
-            },
-        );
-
-        // Smooth pipeline
-        let (smooth_pipeline, smooth_layout) = Self::create_pipeline(
-            &device,
-            SMOOTH_SHADER_WGSL,
-            SMOOTH_SHADER_LAYOUT,
-            &format!("{} Pipeline", SMOOTH_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            SMOOTH_LABEL,
-            PipelineInfo {
-                pipeline: smooth_pipeline,
-                bind_group_layout: smooth_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Contour pipeline
-        let (contour_pipeline, contour_layout) = Self::create_pipeline(
-            &device,
-            CONTOUR_SHADER_WGSL,
-            CONTOUR_SHADER_LAYOUT,
-            &format!("{} Pipeline", CONTOUR_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            CONTOUR_LABEL,
-            PipelineInfo {
-                pipeline: contour_pipeline,
-                bind_group_layout: contour_layout,
-                num_bind_entries: 2,
-            },
-        );
-
-        // Colour pipeline
-        let (colour_pipeline, colour_layout) = Self::create_pipeline(
-            &device,
-            COLOUR_SHADER_WGSL,
-            COLOUR_SHADER_LAYOUT,
-            &format!("{} Pipeline", COLOUR_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            COLOUR_LABEL,
-            PipelineInfo {
-                pipeline: colour_pipeline,
-                bind_group_layout: colour_layout,
-                num_bind_entries: 3,
-            },
-        );
-
-        // Quantise pipeline
-        let (quantize_pipeline, quantize_layout) = Self::create_pipeline(
-            &device,
-            QUANTISE_SHADER_WGSL,
-            QUANTISE_SHADER_LAYOUT,
-            &format!("{} Pipeline", QUANTISE_LABEL),
-            rows,
-            cols,
-        );
-        pipelines.insert(
-            QUANTISE_LABEL,
-            PipelineInfo {
-                pipeline: quantize_pipeline,
-                bind_group_layout: quantize_layout,
-                num_bind_entries: 3,
-            },
-        );
+        add_pipeline!(pipelines, device, INVERT_SHADER_WGSL, INVERT_SHADER_LAYOUT, INVERT_LABEL, rows, cols, 1);
+        add_pipeline!(pipelines, device, MULTIPLY_SHADER_WGSL, MULTIPLY_SHADER_LAYOUT, MULTIPLY_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, ADD_SHADER_WGSL, ADD_SHADER_LAYOUT, ADD_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, NORMALISE_SHADER_WGSL, NORMALISE_SHADER_LAYOUT, NORMALISE_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, GRADIENT_SHADER_WGSL, GRADIENT_SHADER_LAYOUT, GRADIENT_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, MAGNITUDE_SHADER_WGSL, MAGNITUDE_SHADER_LAYOUT, MAGNITUDE_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, FLOW_SHADER_WGSL, FLOW_SHADER_LAYOUT, FLOW_LABEL, rows, cols, 3);
+        add_pipeline!(pipelines, device, SMOOTH_SHADER_WGSL, SMOOTH_SHADER_LAYOUT, SMOOTH_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, CONTOUR_SHADER_WGSL, CONTOUR_SHADER_LAYOUT, CONTOUR_LABEL, rows, cols, 2);
+        add_pipeline!(pipelines, device, COLOUR_SHADER_WGSL, COLOUR_SHADER_LAYOUT, COLOUR_LABEL, rows, cols, 3);
+        add_pipeline!(pipelines, device, QUANTISE_SHADER_WGSL, QUANTISE_SHADER_LAYOUT, QUANTISE_LABEL, rows, cols, 3);
 
         Self {
             device,
@@ -552,9 +378,7 @@ impl Gpu {
         rows: u32,
         cols: u32,
     ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
-        let shader_src = wgsl_code
-            .replace("@rows", &rows.to_string())
-            .replace("@cols", &cols.to_string());
+        let shader_src = wgsl_code.replace("@rows", &rows.to_string()).replace("@cols", &cols.to_string());
 
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some(label),
@@ -587,17 +411,8 @@ impl Gpu {
 
     /// Our single dispatch function that decides whether to do “in-place” or
     /// “separate-output” based on the pipeline's declared number of bind entries.
-    pub async fn run_op(
-        &self,
-        pipeline_name: &str,
-        input_slices: &[&[f32]],
-        output_len: usize,
-        optional_uniform: Option<&[f32]>,
-    ) -> Vec<f32> {
-        let info = self
-            .pipelines
-            .get(pipeline_name)
-            .expect("No pipeline found with that name");
+    pub async fn run_op(&self, pipeline_name: &str, input_slices: &[&[f32]], output_len: usize, optional_uniform: Option<&[f32]>) -> Vec<f32> {
+        let info = self.pipelines.get(pipeline_name).expect("No pipeline found with that name");
 
         let pipeline = &info.pipeline;
         let layout = &info.bind_group_layout;
@@ -619,19 +434,15 @@ impl Gpu {
         let mut gpu_in = Vec::new();
         for (i, slice) in input_slices.iter().enumerate() {
             let size_bytes = (slice.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
-            let sbuf = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Staging In {i}")),
-                    contents: bytemuck::cast_slice(slice),
-                    usage: wgpu::BufferUsages::COPY_SRC,
-                });
+            let sbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Staging In {i}")),
+                contents: bytemuck::cast_slice(slice),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
             let gbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(&format!("GPU In {i}")),
                 size: size_bytes,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
             staging_in.push(sbuf);
@@ -640,14 +451,11 @@ impl Gpu {
 
         // If we have a uniform, make a uniform buffer for it:
         let uniform_buf = if let Some(u_data) = optional_uniform {
-            Some(
-                self.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("Uniform Buffer"),
-                        contents: bytemuck::cast_slice(u_data),
-                        usage: wgpu::BufferUsages::UNIFORM,
-                    }),
-            )
+            Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Uniform Buffer"),
+                contents: bytemuck::cast_slice(u_data),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }))
         } else {
             None
         };
@@ -663,19 +471,15 @@ impl Gpu {
             // We do the multi-buffer approach
             let size_out_bytes = (output_len * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
             let zeroes = vec![0.0_f32; output_len];
-            let sbuf = self
-                .device
-                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("Staging Out"),
-                    contents: bytemuck::cast_slice(&zeroes),
-                    usage: wgpu::BufferUsages::COPY_SRC,
-                });
+            let sbuf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Staging Out"),
+                contents: bytemuck::cast_slice(&zeroes),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
             let gbuf = self.device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("GPU Out"),
                 size: size_out_bytes,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             });
             (Some(gbuf), Some(sbuf))
@@ -683,11 +487,7 @@ impl Gpu {
 
         // 3) Copy all staging input slices → GPU
         {
-            let mut enc = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Init Op Encoder"),
-                });
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Init Op Encoder") });
             for (sbuf, gbuf) in staging_in.iter().zip(gpu_in.iter()) {
                 enc.copy_buffer_to_buffer(sbuf, 0, gbuf, 0, sbuf.size());
             }
@@ -732,11 +532,7 @@ impl Gpu {
 
         // 5) Dispatch
         {
-            let mut encoder = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Compute Op Encoder"),
-                });
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Compute Op Encoder") });
             {
                 let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                     label: Some("Op Pass"),
@@ -775,11 +571,7 @@ impl Gpu {
             mapped_at_creation: false,
         });
         {
-            let mut enc = self
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("Copy Back"),
-                });
+            let mut enc = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Copy Back") });
             enc.copy_buffer_to_buffer(&read_src, 0, &readback, 0, read_size);
             self.queue.submit(Some(enc.finish()));
         }
@@ -817,9 +609,7 @@ impl Gpu {
         // Pass the uniform as a slice of floats
         let scale_data = [scale];
 
-        let result = self
-            .run_op(MULTIPLY_LABEL, &[in_data], out_len, Some(&scale_data))
-            .await;
+        let result = self.run_op(MULTIPLY_LABEL, &[in_data], out_len, Some(&scale_data)).await;
 
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
@@ -830,9 +620,7 @@ impl Gpu {
 
         let offset_data = [offset];
 
-        let result = self
-            .run_op(ADD_LABEL, &[in_data], out_len, Some(&offset_data))
-            .await;
+        let result = self.run_op(ADD_LABEL, &[in_data], out_len, Some(&offset_data)).await;
 
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
@@ -850,9 +638,7 @@ impl Gpu {
         let in_data = input.as_slice().unwrap();
         let out_len = (self.rows * self.cols) as usize;
 
-        let result = self
-            .run_op(NORMALISE_LABEL, &[in_data], out_len, Some(&param_data))
-            .await;
+        let result = self.run_op(NORMALISE_LABEL, &[in_data], out_len, Some(&param_data)).await;
 
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
@@ -871,9 +657,7 @@ impl Gpu {
         let in_data = gradient.as_slice().unwrap();
         let out_len = (self.rows * self.cols) as usize;
 
-        let result = self
-            .run_op(MAGNITUDE_LABEL, &[in_data], out_len, None)
-            .await;
+        let result = self.run_op(MAGNITUDE_LABEL, &[in_data], out_len, None).await;
 
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
@@ -901,9 +685,7 @@ impl Gpu {
         let out_len = (self.rows * self.cols) as usize;
 
         let steps_data = [num_steps as f32];
-        let result = self
-            .run_op(QUANTISE_LABEL, &[in_data], out_len, Some(&steps_data))
-            .await;
+        let result = self.run_op(QUANTISE_LABEL, &[in_data], out_len, Some(&steps_data)).await;
 
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
@@ -914,9 +696,7 @@ impl Gpu {
         let out_len = (self.rows * self.cols * 2) as usize;
 
         // Two input slices, no uniform
-        let result = self
-            .run_op(FLOW_LABEL, &[h_slice, g_slice], out_len, None)
-            .await;
+        let result = self.run_op(FLOW_LABEL, &[h_slice, g_slice], out_len, None).await;
 
         Array3::from_shape_vec((self.rows as usize, self.cols as usize, 2), result).unwrap()
     }
@@ -930,9 +710,7 @@ impl Gpu {
         let out_len = (self.rows * self.cols * 4) as usize;
 
         // Two inputs: height slice + flattened RGBA array
-        let result = self
-            .run_op(COLOUR_LABEL, &[height_slice, &colour_data], out_len, None)
-            .await;
+        let result = self.run_op(COLOUR_LABEL, &[height_slice, &colour_data], out_len, None).await;
 
         Array3::from_shape_vec((self.rows as usize, self.cols as usize, 4), result).unwrap()
     }
