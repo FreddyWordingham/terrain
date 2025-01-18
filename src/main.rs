@@ -1,8 +1,110 @@
+use ndarray::Array2;
 use ndarray_images::Image;
 use terrain::{noise, utils};
-
-use ndarray::Array2;
 use wgpu::util::DeviceExt;
+
+const INVERT_SHADER_WGSL: &str = r#"
+    @group(0) @binding(0)
+    var<storage, read_write> data: array<f32>;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+        let index = gid.y * u32(@cols) + gid.x;
+        if (gid.x < u32(@cols) && gid.y < u32(@rows)) {
+            data[index] = -data[index];
+        }
+    }
+"#;
+const INVERT_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[wgpu::BindGroupLayoutEntry {
+    binding: 0,
+    visibility: wgpu::ShaderStages::COMPUTE,
+    ty: wgpu::BindingType::Buffer {
+        ty: wgpu::BufferBindingType::Storage { read_only: false },
+        has_dynamic_offset: false,
+        min_binding_size: None,
+    },
+    count: None,
+}];
+
+const MULTIPLY_SHADER_WGSL: &str = r#"
+    @group(0) @binding(0)
+    var<storage, read_write> data: array<f32>;
+
+    @group(0) @binding(1)
+    var<uniform> scale: f32;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+        let index = gid.y * u32(@cols) + gid.x;
+        if (gid.x < u32(@cols) && gid.y < u32(@rows)) {
+            data[index] = data[index] * scale;
+        }
+    }
+"#;
+const MULTIPLY_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    // data buffer
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // scale uniform
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
+const ADD_SHADER_WGSL: &str = r#"
+    @group(0) @binding(0)
+    var<storage, read_write> data: array<f32>;
+
+    @group(0) @binding(1)
+    var<uniform> offset: f32;
+
+    @compute @workgroup_size(8, 8)
+    fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+        let index = gid.y * u32(@cols) + gid.x;
+        if (gid.x < u32(@cols) && gid.y < u32(@rows)) {
+            data[index] = data[index] + offset;
+        }
+    }
+"#;
+const ADD_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    // data buffer
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // offset uniform
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
 
 #[tokio::main]
 async fn main() {
@@ -51,6 +153,10 @@ pub struct Gpu {
     multiply_pipeline: wgpu::ComputePipeline,
     multiply_bind_group_layout: wgpu::BindGroupLayout,
 
+    // Add pipeline
+    add_pipeline: wgpu::ComputePipeline,
+    add_bind_group_layout: wgpu::BindGroupLayout,
+
     workgroup_size: (u32, u32, u32),
     rows: u32,
     cols: u32,
@@ -58,7 +164,6 @@ pub struct Gpu {
 
 impl Gpu {
     pub async fn new(rows: u32, cols: u32) -> Self {
-        // Common WGPU setup
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -70,130 +175,34 @@ impl Gpu {
             .unwrap();
 
         // 1) Invert pipeline
-        let invert_shader_src = r#"
-            @group(0) @binding(0)
-            var<storage, read_write> data: array<f32>;
-
-            @compute @workgroup_size(8, 8)
-            fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-                let index = gid.y * u32(@cols) + gid.x;
-                if (gid.x < u32(@cols) && gid.y < u32(@rows)) {
-                    data[index] = -data[index];
-                }
-            }
-        "#
-        .replace("@rows", &rows.to_string())
-        .replace("@cols", &cols.to_string());
-
-        let invert_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Invert Shader"),
-            source: wgpu::ShaderSource::Wgsl(invert_shader_src.into()),
-        });
-
-        let invert_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-                label: None,
-            });
-
-        let invert_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&invert_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let invert_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Invert Pipeline"),
-            layout: Some(&invert_pipeline_layout),
-            module: &invert_module,
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                ..Default::default()
-            },
-            cache: None,
-        });
+        let (invert_pipeline, invert_bind_group_layout) = Self::create_pipeline(
+            &device,
+            INVERT_SHADER_WGSL,
+            INVERT_SHADER_LAYOUT,
+            "Invert Pipeline",
+            rows,
+            cols,
+        );
 
         // 2) Multiply pipeline
-        let multiply_shader_src = r#"
-            @group(0) @binding(0)
-            var<storage, read_write> data: array<f32>;
+        let (multiply_pipeline, multiply_bind_group_layout) = Self::create_pipeline(
+            &device,
+            MULTIPLY_SHADER_WGSL,
+            MULTIPLY_SHADER_LAYOUT,
+            "Multiply Pipeline",
+            rows,
+            cols,
+        );
 
-            @group(0) @binding(1)
-            var<uniform> scale: f32;
-
-            @compute @workgroup_size(8, 8)
-            fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
-                let index = gid.y * u32(@cols) + gid.x;
-                if (gid.x < u32(@cols) && gid.y < u32(@rows)) {
-                    data[index] = data[index] * scale;
-                }
-            }
-        "#
-        .replace("@rows", &rows.to_string())
-        .replace("@cols", &cols.to_string());
-
-        let multiply_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Multiply Shader"),
-            source: wgpu::ShaderSource::Wgsl(multiply_shader_src.into()),
-        });
-
-        // Layout now has two bindings: storage buffer and a uniform buffer for scale
-        let multiply_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    // data buffer
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // scale uniform
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                ],
-                label: None,
-            });
-
-        let multiply_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[&multiply_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let multiply_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Multiply Pipeline"),
-            layout: Some(&multiply_pipeline_layout),
-            module: &multiply_module,
-            entry_point: Some("main"),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                ..Default::default()
-            },
-            cache: None,
-        });
+        // 3) Add pipeline
+        let (add_pipeline, add_bind_group_layout) = Self::create_pipeline(
+            &device,
+            ADD_SHADER_WGSL,
+            ADD_SHADER_LAYOUT,
+            "Add Pipeline",
+            rows,
+            cols,
+        );
 
         Self {
             device,
@@ -202,10 +211,54 @@ impl Gpu {
             invert_bind_group_layout,
             multiply_pipeline,
             multiply_bind_group_layout,
+            add_pipeline,
+            add_bind_group_layout,
             workgroup_size: (8, 8, 1),
             rows,
             cols,
         }
+    }
+
+    fn create_pipeline(
+        device: &wgpu::Device,
+        wgsl_code: &str,
+        layout_entries: &[wgpu::BindGroupLayoutEntry],
+        label: &str,
+        rows: u32,
+        cols: u32,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroupLayout) {
+        let shader_src = wgsl_code
+            .replace("@rows", &rows.to_string())
+            .replace("@cols", &cols.to_string());
+
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some(label),
+            source: wgpu::ShaderSource::Wgsl(shader_src.into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: layout_entries,
+            label: None,
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some(label),
+            layout: Some(&pipeline_layout),
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                ..Default::default()
+            },
+            cache: None,
+        });
+
+        (pipeline, bind_group_layout)
     }
 
     // Multiply input by -1
@@ -222,13 +275,13 @@ impl Gpu {
     }
 
     // Multiply input by a scalar
-    // I * s
+    // I * x
     pub async fn multiply(&self, input: &Array2<f32>, scale: f32) -> Array2<f32> {
         // Create a uniform buffer containing 'scale'
         let scale_buffer = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Scale Buffer"),
+                label: Some("Multiply - scaler Buffer"),
                 contents: bytemuck::cast_slice(&[scale]),
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             });
@@ -238,6 +291,26 @@ impl Gpu {
             Some(&scale_buffer),
             &self.multiply_pipeline,
             &self.multiply_bind_group_layout,
+        )
+        .await
+    }
+
+    // Add a scalar to input
+    // I + x
+    pub async fn add(&self, input: &Array2<f32>, offset: f32) -> Array2<f32> {
+        let offset_buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Add - offset Buffer"),
+                contents: bytemuck::cast_slice(&[offset]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+        self.run_compute(
+            input,
+            Some(&offset_buf),
+            &self.add_pipeline,
+            &self.add_bind_group_layout,
         )
         .await
     }
