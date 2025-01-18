@@ -1,5 +1,5 @@
 use ndarray_images::Image;
-use terrain::{noise, Gpu};
+use terrain::{noise, utils, Gpu};
 
 #[tokio::main]
 async fn main() {
@@ -31,12 +31,12 @@ async fn main() {
 
     let gpu = Gpu::new(resolution.0 as u32, resolution.1 as u32).await;
 
-    let gradient = gpu.gradient(&height).await;
+    let mut levels = gpu.quantise(&height, 14).await;
+    for _ in 0..400 {
+        levels = gpu.smooth(&levels).await;
+    }
 
-    let flow = gpu.flow(&height, &gradient).await;
-    let mut magnitude = gpu.magnitude(&flow).await;
-    magnitude = gpu.normalise(&magnitude).await;
-    magnitude
-        .save("output/flow.png")
-        .expect("Failed to save flow map");
+    levels
+        .save("output/levels.png")
+        .expect("Failed to save contour map");
 }
