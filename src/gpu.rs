@@ -163,6 +163,69 @@ const MAGNITUDE_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
     },
 ];
 
+const COLOUR_SHADER_WGSL: &str = include_str!("shaders/colour.wgsl");
+const COLORMAP_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    // heightmap (read-only)
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // colourmap (read-only)
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // rgb_out (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 2,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
+const SMOOTH_SHADER_WGSL: &str = include_str!("shaders/smooth.wgsl");
+const SMOOTH_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    // data (read-only)
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // output (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
 pub struct Gpu {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -184,6 +247,12 @@ pub struct Gpu {
     gradient_bind_group_layout: wgpu::BindGroupLayout,
     magnitude_pipeline: wgpu::ComputePipeline,
     magnitude_bind_group_layout: wgpu::BindGroupLayout,
+    smooth_pipeline: wgpu::ComputePipeline,
+    smooth_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Colour map
+    colour_pipeline: wgpu::ComputePipeline,
+    colour_bind_group_layout: wgpu::BindGroupLayout,
 
     workgroup_size: (u32, u32, u32),
     rows: u32,
@@ -202,7 +271,7 @@ impl Gpu {
             .await
             .unwrap();
 
-        // 1) Invert pipeline
+        // Invert pipeline
         let (invert_pipeline, invert_bind_group_layout) = Self::create_pipeline(
             &device,
             &INVERT_SHADER_WGSL,
@@ -212,7 +281,7 @@ impl Gpu {
             cols,
         );
 
-        // 2) Multiply pipeline
+        // Multiply pipeline
         let (multiply_pipeline, multiply_bind_group_layout) = Self::create_pipeline(
             &device,
             MULTIPLY_SHADER_WGSL,
@@ -222,7 +291,7 @@ impl Gpu {
             cols,
         );
 
-        // 3) Add pipeline
+        // Add pipeline
         let (add_pipeline, add_bind_group_layout) = Self::create_pipeline(
             &device,
             ADD_SHADER_WGSL,
@@ -232,7 +301,7 @@ impl Gpu {
             cols,
         );
 
-        // 4) Normalise pipeline
+        // Normalise pipeline
         let (normalise_pipeline, normalise_bind_group_layout) = Self::create_pipeline(
             &device,
             NORMALISE_SHADER_WGSL,
@@ -242,7 +311,7 @@ impl Gpu {
             cols,
         );
 
-        // 5) Simulation pipeline
+        // Simulation pipeline
         let (simulation_pipeline, simulation_bind_group_layout) = Self::create_pipeline(
             &device,
             SIMULATION_SHADER_WGSL,
@@ -252,7 +321,7 @@ impl Gpu {
             cols,
         );
 
-        // 6) Gradient pipeline
+        // Gradient pipeline
         let (gradient_pipeline, gradient_bind_group_layout) = Self::create_pipeline(
             &device,
             GRADIENT_SHADER_WGSL,
@@ -262,12 +331,32 @@ impl Gpu {
             cols,
         );
 
-        // 7) Gradient magnitude pipeline
+        // Gradient magnitude pipeline
         let (magnitude_pipeline, magnitude_bind_group_layout) = Self::create_pipeline(
             &device,
             MAGNITUDE_SHADER_WGSL,
             MAGNITUDE_SHADER_LAYOUT,
             "Magnitude Pipeline",
+            rows,
+            cols,
+        );
+
+        // Smooth pipeline
+        let (smooth_pipeline, smooth_bind_group_layout) = Self::create_pipeline(
+            &device,
+            SMOOTH_SHADER_WGSL,
+            SMOOTH_SHADER_LAYOUT,
+            "Smooth Pipeline",
+            rows,
+            cols,
+        );
+
+        // Colour pipeline
+        let (colour_pipeline, colour_bind_group_layout) = Self::create_pipeline(
+            &device,
+            COLOUR_SHADER_WGSL,
+            COLORMAP_SHADER_LAYOUT,
+            "Colour Pipeline",
             rows,
             cols,
         );
@@ -289,6 +378,10 @@ impl Gpu {
             gradient_bind_group_layout,
             magnitude_pipeline,
             magnitude_bind_group_layout,
+            smooth_pipeline,
+            smooth_bind_group_layout,
+            colour_pipeline,
+            colour_bind_group_layout,
             workgroup_size: (8, 8, 1),
             rows,
             cols,
@@ -670,6 +763,35 @@ impl Gpu {
         .await
     }
 
+    pub async fn smooth(&self, input: &Array2<f32>) -> Array2<f32> {
+        let (rows, cols) = (self.rows, self.cols);
+        let in_data = input.as_slice().unwrap();
+
+        // Output starts empty/zero
+        let mut smoothed = Array2::<f32>::zeros((rows as usize, cols as usize));
+        let out_data = smoothed.as_slice().unwrap();
+
+        // Each pixel is just one float => 4 bytes
+        let result_floats = self
+            .run_two_buffer_op(
+                in_data,
+                out_data,
+                &self.smooth_pipeline,
+                &self.smooth_bind_group_layout,
+                4, // input item size in bytes
+                4, // output item size in bytes
+            )
+            .await;
+
+        // Copy them back into 'smoothed'
+        smoothed
+            .as_slice_mut()
+            .unwrap()
+            .copy_from_slice(&result_floats);
+
+        smoothed
+    }
+
     pub async fn simulate(&self, heightmap: &Array2<f32>) -> Array2<f32> {
         let (rows, cols) = (self.rows, self.cols);
         let mut distances = Array2::<f32>::zeros((rows as usize, cols as usize));
@@ -751,5 +873,166 @@ impl Gpu {
             .copy_from_slice(&result_floats);
 
         magnitudes
+    }
+
+    pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 3]]) -> Array3<f32> {
+        let (rows, cols) = (self.rows, self.cols);
+
+        // Flatten the heightmap
+        let height_slice = heightmap.as_slice().unwrap();
+
+        // Flatten the colour array => just pack the 3 floats for each stop
+        // Example: if you have N stops, that's N*3 floats
+        let mut colour_data = Vec::new();
+        for c in colours {
+            colour_data.extend_from_slice(c); // push [r, g, b]
+        }
+
+        // We'll output shape [rows, cols, 3] => 3 floats per pixel => total 3 * rows * cols
+        let out_len = rows as usize * cols as usize * 3;
+        let out_data = vec![0.0f32; out_len];
+
+        // 1) Create staging buffers
+        let heightmap_size =
+            (height_slice.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let colourmap_size =
+            (colour_data.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+        let rgb_out_size = (out_data.len() * std::mem::size_of::<f32>()) as wgpu::BufferAddress;
+
+        let staging_heightmap = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Heightmap Staging"),
+                contents: bytemuck::cast_slice(height_slice),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+        let staging_colourmap = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Colourmap Staging"),
+                contents: bytemuck::cast_slice(&colour_data),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+        let staging_out = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("RGB Out Staging"),
+                contents: bytemuck::cast_slice(&out_data),
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+
+        // 2) Create GPU buffers
+        let heightmap_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Heightmap (storage)"),
+            size: heightmap_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let colourmap_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Colourmap (storage)"),
+            size: colourmap_size,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let rgb_out_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("RGB Out (storage)"),
+            size: rgb_out_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+
+        // 3) Copy CPU → GPU
+        {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Colourmap Init Encoder"),
+                });
+            encoder.copy_buffer_to_buffer(&staging_heightmap, 0, &heightmap_buf, 0, heightmap_size);
+            encoder.copy_buffer_to_buffer(&staging_colourmap, 0, &colourmap_buf, 0, colourmap_size);
+            encoder.copy_buffer_to_buffer(&staging_out, 0, &rgb_out_buf, 0, rgb_out_size);
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        // 4) Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &self.colour_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(
+                        heightmap_buf.as_entire_buffer_binding(),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(
+                        colourmap_buf.as_entire_buffer_binding(),
+                    ),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(rgb_out_buf.as_entire_buffer_binding()),
+                },
+            ],
+            label: Some("Colourmap Bind Group"),
+        });
+
+        // 5) Dispatch compute
+        {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Colourmap Compute Encoder"),
+                });
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Colourmap Pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.colour_pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+                let (wx, wy, wz) = self.workgroup_size;
+                let nx = (cols as f32 / wx as f32).ceil() as u32;
+                let ny = (rows as f32 / wy as f32).ceil() as u32;
+                cpass.dispatch_workgroups(nx, ny, wz);
+            }
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        // 6) Read back GPU → CPU
+        let readback_buf = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Colourmap Readback"),
+            size: rgb_out_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        {
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("Colourmap Copy Encoder"),
+                });
+            encoder.copy_buffer_to_buffer(&rgb_out_buf, 0, &readback_buf, 0, rgb_out_size);
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        {
+            let slice = readback_buf.slice(..);
+            let (sender, receiver) = futures_intrusive::channel::shared::oneshot_channel();
+            slice.map_async(wgpu::MapMode::Read, move |v| sender.send(v).unwrap());
+            self.device.poll(wgpu::Maintain::Wait);
+            receiver.receive().await.unwrap().unwrap();
+        }
+
+        // 7) Rebuild into Array3<f32> of shape (rows, cols, 3)
+        let data = readback_buf.slice(..).get_mapped_range();
+        let gpu_result: Vec<f32> = bytemuck::cast_slice(&data).to_vec();
+        drop(data);
+        readback_buf.unmap();
+
+        Array3::from_shape_vec((rows as usize, cols as usize, 3), gpu_result).unwrap()
     }
 }

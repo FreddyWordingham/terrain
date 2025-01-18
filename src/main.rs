@@ -1,5 +1,5 @@
 use ndarray_images::Image;
-use terrain::{noise, Gpu};
+use terrain::{noise, utils, Gpu};
 
 #[tokio::main]
 async fn main() {
@@ -42,4 +42,26 @@ async fn main() {
     gradient_mag
         .save("output/gradient_mag.png")
         .expect("Failed to save gradient magnitude map");
+
+    // Find the min and max
+    let min = gradient_mag.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let max = gradient_mag
+        .iter()
+        .fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    println!("Min: {}, Max: {}", min, max);
+    let histogram = utils::histogram(&gradient_mag, 20);
+    println!("{:?}", histogram);
+
+    // Colour
+    let colour_stops: [[f32; 3]; 3] = [
+        [0.0, 0.0, 1.0], // blue
+        [0.0, 1.0, 0.0], // green
+        [1.0, 0.0, 0.0], // red
+    ];
+    let colour = gpu.colour(&height, &colour_stops).await;
+
+    // Save the colour map
+    colour
+        .save("output/colour.png")
+        .expect("Failed to save colour map");
 }

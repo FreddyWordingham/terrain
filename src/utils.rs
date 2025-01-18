@@ -124,3 +124,16 @@ pub fn generate_gradient_with_radius(
 
     gradient
 }
+
+pub fn histogram(samples: &Array2<f32>, bins: usize) -> Vec<usize> {
+    let min = samples.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+    let max = samples.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+    let range = max - min;
+    let bin_width = range / bins as f32;
+    let mut histogram = vec![0; bins];
+    for &sample in samples.iter() {
+        let bin = ((sample - min) / bin_width).min(bins as f32 - 1.0) as usize;
+        histogram[bin] += 1;
+    }
+    histogram
+}
