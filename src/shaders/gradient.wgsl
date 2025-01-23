@@ -8,6 +8,7 @@ fn wrap_index(coord : i32, max : i32) -> i32 {
     return ((coord % max) + max) % max;
 }
 
+
 fn calculate_gradient(x : i32, y : i32) -> vec2 < f32> {
     let x_left = wrap_index(x - 1, @cols);
     let x_right = wrap_index(x + 1, @cols);

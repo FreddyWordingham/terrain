@@ -134,10 +134,10 @@ const GRADIENT_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
     },
 ];
 
-const FLOW_LABEL: &str = "flow";
+const FLOW_LABEL: &str = "erosion";
 const FLOW_SHADER_WGSL: &str = include_str!("shaders/flow.wgsl");
 const FLOW_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
-    // Heightmap (read-only)
+    // 0: heightmap (read-only)
     wgpu::BindGroupLayoutEntry {
         binding: 0,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -148,7 +148,7 @@ const FLOW_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
         },
         count: None,
     },
-    // Gradient map (read-write)
+    // 1: erosionBuffer (read-write)
     wgpu::BindGroupLayoutEntry {
         binding: 1,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -159,12 +159,34 @@ const FLOW_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
         },
         count: None,
     },
-    // Output buffer (read-write)
+    // 2: waterBuffer (read-write)
     wgpu::BindGroupLayoutEntry {
         binding: 2,
         visibility: wgpu::ShaderStages::COMPUTE,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // 3: seeds (read-only)
+    wgpu::BindGroupLayoutEntry {
+        binding: 3,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // 4: Params (uniform)
+    wgpu::BindGroupLayoutEntry {
+        binding: 4,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
             has_dynamic_offset: false,
             min_binding_size: None,
         },
@@ -322,6 +344,116 @@ const CONTOUR_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
     },
 ];
 
+const TEST_LABEL: &str = "test";
+const TEST_SHADER_WGSL: &str = include_str!("shaders/test.wgsl");
+const TEST_SHADER_LAYOUT: &[wgpu::BindGroupLayoutEntry] = &[
+    // Heightmap Current (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 0,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Heightmap Next (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 1,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Watermap Current (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 2,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Watermap Next (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 3,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Sedimentmap Current (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 4,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Sedimentmap Next (read-write)
+    wgpu::BindGroupLayoutEntry {
+        binding: 5,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: false },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+    // Simulation Parameters (uniform)
+    wgpu::BindGroupLayoutEntry {
+        binding: 6,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    },
+];
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Params {
+    pub width: u32,
+    pub height: u32,
+    pub radius: f32,
+    pub water_level: f32,
+    pub gravity: f32,
+    pub friction: f32,
+    pub erosion: f32,
+    pub min_velocity: f32,
+    pub max_velocity: f32,
+    pub max_steps: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TestParams {
+    pub rows: u32,
+    pub cols: u32,
+    pub dt: f32,
+    pub erosion_rate: f32,
+    pub deposition_rate: f32,
+    pub sediment_capacity: f32,
+    pub evaporation_rate: f32,
+    pub iterations: u32,
+}
+
 struct PipelineInfo {
     pipeline: wgpu::ComputePipeline,
     bind_group_layout: wgpu::BindGroupLayout,
@@ -359,6 +491,7 @@ impl Gpu {
         add_pipeline!(pipelines, device, CONTOUR_SHADER_WGSL, CONTOUR_SHADER_LAYOUT, CONTOUR_LABEL, rows, cols, 2);
         add_pipeline!(pipelines, device, COLOUR_SHADER_WGSL, COLOUR_SHADER_LAYOUT, COLOUR_LABEL, rows, cols, 3);
         add_pipeline!(pipelines, device, QUANTISE_SHADER_WGSL, QUANTISE_SHADER_LAYOUT, QUANTISE_LABEL, rows, cols, 3);
+        add_pipeline!(pipelines, device, TEST_SHADER_WGSL, TEST_SHADER_LAYOUT, TEST_LABEL, rows, cols, 7);
 
         Self {
             device,
@@ -690,15 +823,171 @@ impl Gpu {
         Array2::from_shape_vec((self.rows as usize, self.cols as usize), result).unwrap()
     }
 
-    pub async fn flow(&self, heightmap: &Array2<f32>, gradient_map: &Array3<f32>) -> Array3<f32> {
-        let h_slice = heightmap.as_slice().unwrap();
-        let g_slice = gradient_map.as_slice().unwrap();
-        let out_len = (self.rows * self.cols * 2) as usize;
+    pub async fn erosion(&self, heightmap: &Array2<f32>, seeds: &[u32], params: TestParams) -> (Array2<f32>, Array2<f32>) {
+        let info = self.pipelines.get(FLOW_LABEL).expect("No pipeline found for erosion");
 
-        // Two input slices, no uniform
-        let result = self.run_op(FLOW_LABEL, &[h_slice, g_slice], out_len, None).await;
+        let pipeline = &info.pipeline;
+        let layout = &info.bind_group_layout;
 
-        Array3::from_shape_vec((self.rows as usize, self.cols as usize, 2), result).unwrap()
+        // Prepare host-side arrays:
+        // Erosion + water start as zero
+        let total_len = (self.rows * self.cols) as usize;
+        let erosion_init = vec![0.0_f32; total_len];
+        let water_init = vec![0.0_f32; total_len];
+
+        // Convert your data to byte slices
+        let height_slice = bytemuck::cast_slice(heightmap.as_slice().unwrap());
+        let erosion_slice = bytemuck::cast_slice(&erosion_init);
+        let water_slice = bytemuck::cast_slice(&water_init);
+        let seeds_slice = bytemuck::cast_slice(seeds);
+        let param_slice = bytemuck::bytes_of(&params);
+
+        // Create buffers (staging + GPU) for each
+        fn create_rw_buffer(device: &wgpu::Device, label: &str, data_bytes: &[u8]) -> (wgpu::Buffer, wgpu::Buffer) {
+            let size = data_bytes.len() as wgpu::BufferAddress;
+            let staging = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("{} Staging", label)),
+                contents: data_bytes,
+                usage: wgpu::BufferUsages::COPY_SRC,
+            });
+            let gpu = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            });
+            (staging, gpu)
+        }
+
+        // Heightmap (read-only)
+        let (height_staging, height_gpu) = create_rw_buffer(&self.device, "Heightmap", height_slice);
+        // Erosion buffer (read-write)
+        let (erosion_staging, erosion_gpu) = create_rw_buffer(&self.device, "ErosionBuffer", erosion_slice);
+        // Water buffer (read-write)
+        let (water_staging, water_gpu) = create_rw_buffer(&self.device, "WaterBuffer", water_slice);
+        // Seeds (read-only)
+        let (seeds_staging, seeds_gpu) = create_rw_buffer(&self.device, "Seeds", seeds_slice);
+
+        // Uniform buffer
+        let uniform_buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Erosion Params"),
+            contents: param_slice,
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        // Copy host → device for each
+        {
+            let mut init_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Erosion Init Encoder"),
+            });
+            init_encoder.copy_buffer_to_buffer(&height_staging, 0, &height_gpu, 0, height_staging.size());
+            init_encoder.copy_buffer_to_buffer(&erosion_staging, 0, &erosion_gpu, 0, erosion_staging.size());
+            init_encoder.copy_buffer_to_buffer(&water_staging, 0, &water_gpu, 0, water_staging.size());
+            init_encoder.copy_buffer_to_buffer(&seeds_staging, 0, &seeds_gpu, 0, seeds_staging.size());
+
+            self.queue.submit(Some(init_encoder.finish()));
+        }
+
+        // Create bind group (5 entries)
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[
+                // 0) Heightmap
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(height_gpu.as_entire_buffer_binding()),
+                },
+                // 1) Erosion
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(erosion_gpu.as_entire_buffer_binding()),
+                },
+                // 2) Water
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(water_gpu.as_entire_buffer_binding()),
+                },
+                // 3) Seeds
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Buffer(seeds_gpu.as_entire_buffer_binding()),
+                },
+                // 4) Params uniform
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Buffer(uniform_buf.as_entire_buffer_binding()),
+                },
+            ],
+            label: Some("Erosion BindGroup"),
+        });
+
+        // Dispatch
+        {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Erosion Encoder") });
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Erosion Pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+                let (wgx, wgy, wgz) = self.workgroup_size;
+                let nx = (self.cols + wgx - 1) / wgx;
+                let ny = (self.rows + wgy - 1) / wgy;
+                cpass.dispatch_workgroups(nx, ny, wgz);
+            }
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        // Read back the final erosion + water buffers
+        // We do two copies, then map both
+        let erosion_readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Erosion Readback"),
+            size: erosion_gpu.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let water_readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Water Readback"),
+            size: water_gpu.size(),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        {
+            let mut copy_encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Erosion Copy Encoder"),
+            });
+            copy_encoder.copy_buffer_to_buffer(&erosion_gpu, 0, &erosion_readback, 0, erosion_gpu.size());
+            copy_encoder.copy_buffer_to_buffer(&water_gpu, 0, &water_readback, 0, water_gpu.size());
+            self.queue.submit(Some(copy_encoder.finish()));
+        }
+
+        // Wait, then map and copy out
+        self.device.poll(wgpu::Maintain::Wait);
+
+        // Helper to read a buffer’s contents into a Vec<f32>
+        async fn read_back(device: &wgpu::Device, buf: &wgpu::Buffer, _len_bytes: u64) -> Vec<f32> {
+            let slice = buf.slice(..);
+            let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+            slice.map_async(wgpu::MapMode::Read, move |v| tx.send(v).unwrap());
+            device.poll(wgpu::Maintain::Wait);
+            rx.receive().await.unwrap().unwrap();
+            let data = slice.get_mapped_range();
+            let result = bytemuck::cast_slice::<u8, f32>(&data).to_vec();
+            drop(data);
+            buf.unmap();
+            result
+        }
+
+        let erosion_vec = read_back(&self.device, &erosion_readback, erosion_gpu.size()).await;
+        let water_vec = read_back(&self.device, &water_readback, water_gpu.size()).await;
+
+        // Convert back to Array2
+        let erosion_arr = Array2::from_shape_vec((self.rows as usize, self.cols as usize), erosion_vec).unwrap();
+        let water_arr = Array2::from_shape_vec((self.rows as usize, self.cols as usize), water_vec).unwrap();
+
+        (erosion_arr, water_arr)
     }
 
     pub async fn colour(&self, heightmap: &Array2<f32>, colours: &[[f32; 4]]) -> Array3<f32> {
@@ -713,5 +1002,157 @@ impl Gpu {
         let result = self.run_op(COLOUR_LABEL, &[height_slice, &colour_data], out_len, None).await;
 
         Array3::from_shape_vec((self.rows as usize, self.cols as usize, 4), result).unwrap()
+    }
+
+    pub async fn test(&self, heightmap: &Array2<f32>, watermap: &Array2<f32>, sedimentmap: &Array2<f32>, params: TestParams) -> (Array2<f32>, Array2<f32>, Array2<f32>) {
+        let info = self.pipelines.get(TEST_LABEL).expect("No pipeline found for test");
+
+        let pipeline = &info.pipeline;
+        let layout = &info.bind_group_layout;
+
+        // Prepare buffers for heightmap, watermap, sedimentmap
+        let total_len = (self.rows * self.cols) as usize;
+
+        let heightmap_current = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Heightmap Current"),
+            contents: bytemuck::cast_slice(heightmap.as_slice().unwrap()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        });
+        let heightmap_next = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Heightmap Next"),
+            size: (total_len * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let watermap_current = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Watermap Current"),
+            contents: bytemuck::cast_slice(watermap.as_slice().unwrap()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        });
+        let watermap_next = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Watermap Next"),
+            size: (total_len * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let sedimentmap_current = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Sedimentmap Current"),
+            contents: bytemuck::cast_slice(sedimentmap.as_slice().unwrap()),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        });
+        let sedimentmap_next = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Sedimentmap Next"),
+            size: (total_len * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Uniform buffer
+        let param_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Simulation Parameters"),
+            contents: bytemuck::bytes_of(&params),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        // Create bind group
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(heightmap_current.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(heightmap_next.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(watermap_current.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Buffer(watermap_next.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Buffer(sedimentmap_current.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Buffer(sedimentmap_next.as_entire_buffer_binding()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Buffer(param_buffer.as_entire_buffer_binding()),
+                },
+            ],
+            label: Some("Test Bind Group"),
+        });
+
+        // Dispatch compute pass
+        {
+            let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Test Command Encoder"),
+            });
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("Test Compute Pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(pipeline);
+                cpass.set_bind_group(0, &bind_group, &[]);
+                let (wgx, wgy, wgz) = self.workgroup_size;
+                let nx = (self.cols + wgx - 1) / wgx;
+                let ny = (self.rows + wgy - 1) / wgy;
+                cpass.dispatch_workgroups(nx, ny, wgz);
+            }
+            self.queue.submit(Some(encoder.finish()));
+        }
+
+        // Read back the next buffers
+        let height_result = self.read_back_buffer(&heightmap_next, total_len).await;
+        let water_result = self.read_back_buffer(&watermap_next, total_len).await;
+        let sediment_result = self.read_back_buffer(&sedimentmap_next, total_len).await;
+
+        // Convert back to Array2
+        let height_array = Array2::from_shape_vec((self.rows as usize, self.cols as usize), height_result).unwrap();
+        let water_array = Array2::from_shape_vec((self.rows as usize, self.cols as usize), water_result).unwrap();
+        let sediment_array = Array2::from_shape_vec((self.rows as usize, self.cols as usize), sediment_result).unwrap();
+
+        (height_array, water_array, sediment_array)
+    }
+
+    async fn read_back_buffer(&self, buffer: &wgpu::Buffer, len: usize) -> Vec<f32> {
+        let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Readback Buffer"),
+            size: (len * std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Encode the buffer copy command
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Readback Command Encoder"),
+        });
+        encoder.copy_buffer_to_buffer(buffer, 0, &readback, 0, (len * std::mem::size_of::<f32>()) as wgpu::BufferAddress);
+        self.queue.submit(Some(encoder.finish()));
+
+        // Wait for the GPU to finish executing the command
+        let slice = readback.slice(..);
+        let (tx, rx) = futures_intrusive::channel::shared::oneshot_channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| tx.send(result).unwrap());
+        self.device.poll(wgpu::Maintain::Wait);
+        rx.receive().await.unwrap().unwrap();
+
+        // Read the buffer data and convert it to `Vec<f32>`
+        let data = slice.get_mapped_range();
+        let result = bytemuck::cast_slice::<u8, f32>(&data).to_vec();
+        drop(data); // Release the mapping
+        readback.unmap();
+
+        result
     }
 }

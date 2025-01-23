@@ -4,14 +4,16 @@ version = "0.0.0"
 edition = "2021"
 
 [dependencies]
-bytemuck = "1.21.0"
+bytemuck = { version = "1.21.0", features = ["derive"] }
 futures-intrusive = "0.5.0"
 itertools = "0.14.0"
 nalgebra = "0.33.2"
-ndarray = "0.16.1"
+ndarray = { version = "0.16.1", features = ["rayon"] }
 ndarray_images = "0.0.0"
 noisette = "0.0.0"
 pathfinding = "4.13.1"
 rand = "0.8.5"
+rayon = "1.10.0"
+rustfft = "6.2.0"
 tokio = { version = "1.43.0", features = ["full"] }
 wgpu = "24.0.0"
